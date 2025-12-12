@@ -67,12 +67,20 @@ typedef struct mp_gpool_s {
 } mp_gpool_t;
 
 
+// // Global list of gpools
+// static _Atomic(mp_gpool_t*)mp_gpools;
+// 
+// // Walk the gpools
+// static mp_gpool_t* mp_gpool_first(void) {
+//   return mp_atomic_load_ptr(mp_gpool_t, &mp_gpools);
+// }
+
 // Global list of gpools
-static _Atomic(mp_gpool_t*)mp_gpools;
+static __thread mp_gpool_t* mp_gpools = NULL;
 
 // Walk the gpools
 static mp_gpool_t* mp_gpool_first(void) {
-  return mp_atomic_load_ptr(mp_gpool_t, &mp_gpools);
+  return mp_gpools;
 }
 
 static mp_gpool_t* mp_gpool_next(const mp_gpool_t* gp) {
@@ -109,10 +117,16 @@ static mp_gpool_t* mp_gpool_create(void* p, ssize_t size, ssize_t stack_size, ss
   gp->gap_size = gap_size;
   gp->free_sp = 1;  // first block is allocated to the gpool_t itself
   gp->free_lock = mp_spin_lock_create();
-  // push atomically at the head of the pools
-  gp->next = mp_atomic_load_ptr(mp_gpool_t, &mp_gpools);
-  while (!mp_atomic_cas_ptr(mp_gpool_t, &mp_gpools, &gp->next, gp)) {};
-  //mp_trace_message("gpool_create: %p, b1: %p, b2: %p\n", gp, (uint8_t*)gp + gp->block_size, (uint8_t*)gp + 2*gp->block_size);
+
+  // // push atomically at the head of the pools
+  // gp->next = mp_atomic_load_ptr(mp_gpool_t, &mp_gpools);
+  // while (!mp_atomic_cas_ptr(mp_gpool_t, &mp_gpools, &gp->next, gp)) {};
+  // //mp_trace_message("gpool_create: %p, b1: %p, b2: %p\n", gp, (uint8_t*)gp + gp->block_size, (uint8_t*)gp + 2*gp->block_size);
+
+  gp->next = NULL;
+  mp_gpools = gp;
+
+
   return gp;
 }
 
@@ -124,14 +138,14 @@ static uint8_t* mp_gpool_alloc_stack(uint8_t** stk, ssize_t* stk_size) {
     ssize_t sp;
     volatile int16_t _access = 0;
     _access += gp->free[gp->free_sp + 64]; // ensure no page fault happens inside the spin lock
-    mp_spin_lock(&gp->free_lock) {
+    // mp_spin_lock(&gp->free_lock) {
       // pop from free stack
       sp = gp->free_sp;
       if (sp < gp->block_count) {
         gp->free_sp = sp + 1;
         block_idx = gp->free[sp] + sp;
       }
-    }    
+    // }    
     mp_assert_internal(block_idx >= 0 && block_idx < gp->block_count);
     if (block_idx > 0) {
       if (mp_gpool_grows_down()) {
@@ -192,14 +206,14 @@ static void mp_gpool_free(uint8_t* stk) {
       else {
         idx = block_idx;
       }
-      mp_spin_lock(&gp->free_lock) {
+      // mp_spin_lock(&gp->free_lock) {
         // push on free stack
         gp->free_sp--;
         sp = gp->free_sp;
         //idx = gp->block_count - block_idx - sp;
         idx = idx - sp;        
         gp->free[sp] = (int16_t)idx;
-      }
+      // }
       mp_assert(idx >= INT16_MIN && idx <= INT16_MAX);
       mp_assert(sp > 0);
       return; // done
